@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bulk Image Compressor</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🗜️</text></svg>">
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--text:#1b1f24;--muted:#667085;--line:#e2e5ea;--accent:#2563eb;--accent-text:#fff;--good:#15803d;--bad:#b42318;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14161a;--card:#1e2126;--text:#eceef1;--muted:#98a2b3;--line:#2e333b;--accent:#5b8def;--accent-text:#0b1220;--good:#4ade80;--bad:#f97066}}
+:root[data-theme="dark"]{--bg:#14161a;--card:#1e2126;--text:#eceef1;--muted:#98a2b3;--line:#2e333b;--accent:#5b8def;--accent-text:#0b1220;--good:#4ade80;--bad:#f97066}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:760px;margin:0 auto;padding:24px 16px 48px}
+h1{font-size:1.5rem;margin:0 0 4px}
+.sub{color:var(--muted);margin:0 0 20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+#drop{border:2px dashed var(--line);text-align:center;padding:32px 16px;cursor:pointer;transition:border-color .15s}
+#drop.over{border-color:var(--accent)}
+#drop strong{display:block;font-size:1.05rem}
+#drop span{color:var(--muted);font-size:.9rem}
+.opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px}
+label{display:block;font-size:.85rem;color:var(--muted);margin-bottom:6px}
+label b{color:var(--text)}
+input[type=range]{width:100%}
+input[type=number],select{width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);font:inherit}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--text);padding:8px 14px;border-radius:8px;cursor:pointer}
+button.primary{background:var(--accent);color:var(--accent-text);border-color:var(--accent);font-weight:600}
+button:disabled{opacity:.5;cursor:default}
+.list{overflow-x:auto}
+.item{display:grid;grid-template-columns:48px 1fr auto;gap:12px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}
+.item:first-child{border-top:0}
+.item img{width:48px;height:48px;object-fit:cover;border-radius:6px;background:var(--line)}
+.name{font-weight:600;word-break:break-all}
+.meta{font-size:.85rem;color:var(--muted)}
+.good{color:var(--good)}.bad{color:var(--bad)}
+.summary{font-weight:600}
+.note{font-size:.85rem;color:var(--muted)}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<main>
+  <h1>Bulk Image Compressor</h1>
+  <p class="sub">Shrink many images at once. Everything happens in your browser, so nothing is uploaded.</p>
+
+  <div id="drop" class="card" tabindex="0" role="button" aria-label="Choose images">
+    <strong>Drop images here or click to choose</strong>
+    <span>JPG, PNG, WebP</span>
+    <input id="file" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden>
+  </div>
+
+  <div class="card opts">
+    <div>
+      <label>Quality: <b id="qv">80</b></label>
+      <input id="quality" type="range" min="10" max="100" value="80">
+    </div>
+    <div>
+      <label for="maxw">Max width (px, blank = keep)</label>
+      <input id="maxw" type="number" min="16" placeholder="e.g. 1920">
+    </div>
+    <div>
+      <label for="fmt">Output format</label>
+      <select id="fmt">
+        <option value="keep">Keep original</option>
+        <option value="image/jpeg">JPEG</option>
+        <option value="image/webp">WebP (smallest)</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <button id="go" class="primary" disabled>Compress all</button>
+      <button id="zip" disabled>Download all (ZIP)</button>
+      <button id="clear" disabled>Clear</button>
+    </div>
+    <p id="summary" class="summary"></p>
+    <p id="msg" class="note"></p>
+    <div id="list" class="list"></div>
+  </div>
+  <p class="note">Note: PNG stays lossless when kept as PNG, so the quality slider only affects JPEG and WebP. Choose WebP for the biggest savings.</p>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let items = [];
+
+// ---------- helpers ----------
+const fmtBytes = n => n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(2) + ' MB';
+const EXT = {'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp'};
+const baseName = n => n.replace(/\.[^.]+$/, '');
+const toBlob = (canvas, type, q) => new Promise(res => canvas.toBlob(res, type, q));
+
+// ---------- compression (one image) ----------
+async function compress(item, quality, maxWidth, fmt) {
+  const bmp = await createImageBitmap(item.file, {imageOrientation: 'from-image'});
+  const scale = maxWidth && bmp.width > maxWidth ? maxWidth / bmp.width : 1;
+  const w = Math.round(bmp.width * scale), h = Math.round(bmp.height * scale);
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  const type = fmt === 'keep' ? item.file.type : fmt;
+  if (type === 'image/jpeg') { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h); } // JPEG has no transparency
+  ctx.drawImage(bmp, 0, 0, w, h);
+  bmp.close();
+  const out = await toBlob(canvas, type, quality / 100);
+  if (!out) throw new Error('Could not encode image');
+  // If it got bigger and we did not change format or size, keep the original.
+  if (out.size >= item.file.size && fmt === 'keep' && scale === 1) {
+    return {blob: item.file, type: item.file.type};
+  }
+  return {blob: out, type};
+}
+
+// ---------- UI ----------
+function render() {
+  const list = $('list');
+  list.textContent = '';
+  for (const it of items) {
+    const row = document.createElement('div');
+    row.className = 'item';
+    const img = document.createElement('img');
+    img.src = it.thumb; img.alt = '';
+    const info = document.createElement('div');
+    const name = document.createElement('div');
+    name.className = 'name'; name.textContent = it.outName || it.file.name;
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    if (it.status === 'error') { meta.textContent = it.error; meta.classList.add('bad'); }
+    else if (it.status === 'done') {
+      const pct = Math.round((1 - it.blob.size / it.file.size) * 100);
+      meta.textContent = fmtBytes(it.file.size) + ' → ' + fmtBytes(it.blob.size) + ' (' + (pct > 0 ? '-' + pct : '+' + Math.abs(pct)) + '%)';
+      if (pct > 0) meta.classList.add('good');
+    } else meta.textContent = it.status === 'working' ? 'Compressing…' : fmtBytes(it.file.size) + ' · ready';
+    info.append(name, meta);
+    row.append(img, info);
+    if (it.status === 'done') {
+      const b = document.createElement('button');
+      b.textContent = 'Save';
+      b.onclick = () => save(it.outName, it.blob);
+      row.append(b);
+    } else row.append(document.createElement('span'));
+    list.append(row);
+  }
+  const done = items.filter(i => i.status === 'done');
+  $('go').disabled = !items.length;
+  $('clear').disabled = !items.length;
+  $('zip').disabled = !done.length || typeof JSZip === 'undefined';
+  const before = done.reduce((s, i) => s + i.file.size, 0);
+  const after = done.reduce((s, i) => s + i.blob.size, 0);
+  $('summary').textContent = done.length
+    ? done.length + ' compressed: ' + fmtBytes(before) + ' → ' + fmtBytes(after) + ' (saved ' + (before ? ((1 - after / before) * 100).toFixed(1) : 0) + '%)'
+    : '';
+}
+
+function save(filename, data) {
+  const url = URL.createObjectURL(data);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+function addFiles(fileList) {
+  for (const f of fileList) {
+    if (!EXT[f.type]) continue;
+    items.push({file: f, thumb: URL.createObjectURL(f), status: 'ready'});
+  }
+  render();
+}
+
+async function runAll() {
+  const quality = +$('quality').value;
+  const maxWidth = parseInt($('maxw').value, 10) || 0;
+  const fmt = $('fmt').value;
+  $('go').disabled = true;
+  const used = new Set();
+  for (const it of items) { it.status = 'working'; }
+  render();
+  let next = 0;
+  async function worker() { // 3 images at a time
+    while (next < items.length) {
+      const it = items[next++];
+      try {
+        const {blob, type} = await compress(it, quality, maxWidth, fmt);
+        let name = baseName(it.file.name) + '.' + EXT[type], n = 1;
+        while (used.has(name)) name = baseName(it.file.name) + '-' + (++n) + '.' + EXT[type];
+        used.add(name);
+        Object.assign(it, {blob, outName: name, status: 'done'});
+      } catch (e) { Object.assign(it, {status: 'error', error: e.message || 'Failed'}); }
+      render();
+    }
+  }
+  await Promise.all([worker(), worker(), worker()]);
+  render();
+}
+
+async function zipAll() {
+  const zip = new JSZip();
+  items.filter(i => i.status === 'done').forEach(i => zip.file(i.outName, i.blob));
+  $('msg').textContent = 'Building ZIP…';
+  const blob = await zip.generateAsync({type: 'blob'});
+  $('msg').textContent = '';
+  save('compressed-images.zip', blob);
+}
+
+// ---------- events ----------
+const drop = $('drop'), input = $('file');
+drop.onclick = () => input.click();
+drop.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') input.click(); };
+input.onchange = () => { addFiles(input.files); input.value = ''; };
+['dragenter', 'dragover'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave', 'drop'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', e => addFiles(e.dataTransfer.files));
+$('quality').oninput = e => { $('qv').textContent = e.target.value; };
+$('go').onclick = runAll;
+$('zip').onclick = zipAll;
+$('clear').onclick = () => { items.forEach(i => URL.revokeObjectURL(i.thumb)); items = []; render(); };
+
+render();
+</script>
+</body>
+</html>
